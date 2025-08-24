@@ -1,0 +1,23 @@
+; This entry is designed to connect to VHost in 'pipe' modem
+; mode. It uses 'autodrop' - after the login has finished,
+; the modem server will disconnect.
+;
+id          VHost (line 0)
+driver      pipea
+port        0
+autodrop
+
+; VHost seems to send top-bit sent stuff, which confuses some terminals
+; (eg Workmate 95). This option masks outgoing data with 0x7f, which seems
+; to help it.
+7bit
+
+; This stops TelnetIn from removing the first character after a CR, which
+; is usually a LF.
+donteatlf
+
+; This turns off any pretence at Telnet negotiation - Workmate 95 doesn't
+; believe in it at all, it appears.
+negotiateoff
+
+end

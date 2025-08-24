@@ -1,0 +1,706 @@
+/*                  _____________________________________________
+                  [>                                             <]
+Project           [> Telnet server                               <]
+Author            [> Hugo Fiennes                                <]
+Date started      [> 23-September-1990                           <]
+                  [>                                             <]
+Module name       [> Main                                        <]
+Current version   [> 00.19                                       <]
+Version date      [> 11-June-1997                                <]
+State             [> Unfinished                                  <]
+                  [>                                             <]
+                  [>  This source is COPYRIGHT © 1990-1996 by    <]
+                  [>      Hugo Fiennes of The Serial Port        <]
+                  [>_____________________________________________<]
+*/
+
+#include <stdio.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <time.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <string.h>
+
+#include "wimp.h"        /*  access to WIMP SWIs                      */
+#include "wimpt.h"       /*  wimp task facilities                     */
+#include "win.h"         /*  registering window handlers              */
+#include "event.h"       /*  poll loops, etc                          */
+#include "baricon.h"     /*  putting icon on icon bar                 */
+#include "sprite.h"      /*  sprite operations                        */
+#include "werr.h"        /*  error reporting                          */
+#include "res.h"         /*  access to resources                      */
+#include "resspr.h"      /*  sprite resources                         */
+#include "template.h"    /*  reading in template file                 */
+#include "os.h"          /*  low-level RISCOS access                  */
+#include "dbox.h"        /*  dialogue box handling                    */
+#include "saveas.h"      /*  data export from dbox by icon dragging   */
+#include "xferrecv.h"    /*  data import                              */
+#include "visdelay.h"    /*  hourglass                                */
+#include "fileicon.h"
+#include "heap.h"
+#include "flex.h"
+
+#include "in.h"
+#include "socket.h"
+#include "sock_errno.h"
+#include "netdb.h"
+#include "ioctl.h"
+
+#include "port.h"
+#include "telnet.h"
+#include "alarm.h"
+#include "str.h"
+
+#define  VERSION              "0.05"
+#define  VERSIONDATE          "0.05 (06-Aug-1997)"
+
+/*#define DEBUG*/
+#define xbug buglib_message
+extern void xbug(char*,...);
+
+extern int  main(int,char**);
+extern void window_init(void),do_iconmenu(void*,char*),nullproc(wimp_i),
+            read_icon(wimp_w,wimp_i,char*),write_icon(wimp_w,wimp_i,char*),
+            set_icon(wimp_w,wimp_i,int),open_swindow(wimp_w,int,int),
+            poll_proc(wimp_eventstr*,void*);
+extern int  (*driver_load(int*,char*))(int,...);
+extern int *driver_block;
+extern void xbug(char*,...);
+extern void port_initialise(void),port_closedown(void);
+
+int    portnumber,sessions=0,broadcast_handle,global_tx,global_sending,our_network,
+       our_station;
+menu   iconmenu;
+char   *econet_rxdata=0,*econet_txdata=0,str1[4],str2[4];
+wimp_w status_handle;
+
+/*** Config file layout
+
+     ID modem id
+     portdriver portnumber password modemdriver
+
+***/
+
+_session session[SESSIONS];
+_session *port;
+
+void window_poll()
+  {
+  event_process();
+  port_select();
+  }
+
+static int socket_listener=-1;
+extern int errno;
+
+void saybye(_session *line,char *msg)
+  {
+  /* Close socket */
+  socketclose(line->socket);
+  line->socket=-1;
+  line->status=0;
+
+  /* Hangup line */
+  port=line;
+  portnumber=line->portnumber;
+  driver_block=line->driver_block;
+  port_dtr(0); port_rts(0);
+
+  /* Show status */
+  write_icon(status_handle,line->number,"Idle");
+  }
+
+/* Open listener */
+void new_listener()
+  {
+  struct sockaddr_in our_sin;
+  char i;
+
+  if (socket_listener>=0) return;
+
+  /* Create a socket */
+  socket_listener=socket(AF_INET,SOCK_STREAM,0);
+
+  /* Bind it to the telnet port (23) */
+  memset(&our_sin,0,sizeof(our_sin));
+  our_sin.sin_family=AF_INET;
+  our_sin.sin_addr.s_addr=INADDR_ANY;
+  our_sin.sin_port=htons(23);
+  if (bind(socket_listener,(struct sockaddr*)&our_sin,sizeof(our_sin))<0)
+    {
+    /* Error! */
+    werr(0,"Bind failed - %d",errno);
+    }
+
+  /* Mark as ready */
+  listen(socket_listener,1);
+
+  /* Set options */
+  i=1;
+  if (socketioctl(socket_listener,FIONBIO,&i)==-1) werr(0,"ioctl");
+  /*i=1;
+  if (socketioctl(socket_listener,FIOASYNC,&i)==-1) werr(0,"ioctl");*/
+  }
+
+void resolve_address(_session *this)
+  {
+  int result;
+  struct hostent *host;
+  char buffer[64];
+
+  /* First call? */
+  if (this->resolved==0)
+    {
+    sprintf(buffer,"Resolving %s",this->remote);
+    write_icon(status_handle,this->number,buffer);
+    this->resolved++;
+    }
+
+  /* Find an address */
+  if (os_swi2r(Resolver_GetHost,(int)this->remote,0,&result,(int*)&host)!=NULL)
+    {
+    /* No ANT resolver */
+    sprintf(buffer,"Can't resolve (no resolver) %s",this->remote);
+    write_icon(status_handle,this->number,buffer);
+    this->resolved=3;
+    }
+  else
+    {
+    switch(result)
+      {
+      case 0:
+        /* Got name */
+        sprintf(buffer,"%s",host->h_name);
+        write_icon(status_handle,this->number,buffer);
+        this->resolved=3;
+        break;
+
+      case EINPROGRESS:
+        /* It's working */
+        break;
+
+      case -1:
+        /* Not found: update info */
+        sprintf(buffer,"Can't resolve %s",this->remote);
+        write_icon(status_handle,this->number,buffer);
+        this->resolved=3;
+        break;
+
+      case -2:
+        /* Not found (remote error) */
+        sprintf(buffer,"Can't resolve (remerr) %s",this->remote);
+        write_icon(status_handle,this->number,buffer);
+        this->resolved=3;
+        break;
+      }
+    }
+  }
+
+void negsend(int socket,int c,int d)
+  {
+  char buffer[3];
+
+  buffer[0]=IAC;
+  buffer[1]=c;
+  buffer[2]=d;
+  send(socket,buffer,3,0);
+  }
+
+/*****************************************************************************/
+
+int main(int argc,char *argv[])
+  {
+  FILE *f; char line[120],drivername[12],*l; int a;
+
+  /* Initialise windows */
+  window_init();
+
+  /* Clear session data */
+  for(a=0;a<SESSIONS;a++)
+    {
+    memset(&session[a],0,sizeof(_session));
+    session[a].socket=-1; session[a].portnumber=-1;
+    session[a].number=a;
+    }
+
+  /* Read configuration file */
+  if ((f=fopen("<TelnetIN$Dir>.Config","r"))==NULL)
+    {
+    werr(1,"Can't open configuration file");
+    }
+
+  do
+    {
+    line[0]=0;
+    fgets(line,120,f);
+    if (line[0]!=';' && line[0]!=0 && strncmp(line,"id ",3)==0)
+      {
+      /* Terminate & skip spaces */
+      if (line[strlen(line)-1]<32) line[strlen(line)-1]=0;
+      l=line+3; while(*l==' ') l++;
+
+      strcpy(session[sessions].id,l);
+      *drivername=0;
+      session[sessions].flags=0;
+      session[sessions].portnumber=-1;
+      session[sessions].modemdriver=0;
+      *session[sessions].password=0;
+      *session[sessions].hello=0;
+      *session[sessions].init=0;
+
+      do
+        {
+        fgets(line,120,f);
+        if (line[strlen(line)-1]<32) line[strlen(line)-1]=0;
+        while(line[strlen(line)-1]==32) line[strlen(line)-1]=0;
+
+        /* Isolate command/parameter */
+        if ((l=strchr(line,' '))!=NULL) *l++=0; else l="";
+        while(*l==' ') l++;
+
+        if (strcmp(line,"driver")==0) strcpy(drivername,l);
+        if (strcmp(line,"port")==0) sscanf(l,"%d",&session[sessions].portnumber);
+        if (strcmp(line,"autodrop")==0) session[sessions].flags|=FLAG_DROP;
+        if (strcmp(line,"leavedtr")==0) session[sessions].flags|=FLAG_LEAVEDTR;
+        if (strcmp(line,"7bit")==0) session[sessions].flags|=FLAG_7BIT;
+        if (strcmp(line,"donteatlf")==0) session[sessions].flags|=FLAG_DONTEATLF;
+        if (strcmp(line,"negotiateoff")==0) session[sessions].flags|=FLAG_NEGOTIATEOFF;
+        if (strcmp(line,"hello")==0) strcpy(session[sessions].hello,l);
+        if (strcmp(line,"init")==0) strcpy(session[sessions].init,l);
+        }
+      while(feof(f)==0 && strcmp(line,"end")!=0);
+      if (*drivername!=0 && session[sessions].portnumber>=0)
+        {
+        /* Load driver */
+        if ((session[sessions].driver=driver_load(session[sessions].driver_block,drivername))==NULL)
+          {
+          werr(1,"Can't load driver '%s'",drivername);
+          }
+
+        driver_block=session[sessions].driver_block;
+        portnumber=session[sessions].portnumber;
+        port=&session[sessions];
+        port_initialise();
+        port_dtr(0); port_rts(0);
+
+        /* Update window */
+        write_icon(status_handle,sessions,session[sessions].id);
+        sprintf(line,"%s#%d",drivername,session[sessions].portnumber);
+        write_icon(status_handle,sessions+96,line);
+
+        sessions++;
+        }
+      }
+    }
+  while(feof(f)==0);
+  fclose(f);
+
+  /* Open a new listener */
+  new_listener();
+
+  while(1) event_process();
+  }
+
+void dealloc()
+  {
+  int a;
+
+  /* Junk listener */
+  if (socket_listener>=0) socketclose(socket_listener);
+
+  /* Bye to all ports */
+  for(a=0;a<SESSIONS;a++)
+    {
+    /* Junk connections */
+    if (session[a].socket>=0) socketclose(session[a].socket);
+    }
+
+  for(a=0;a<sessions;a++)
+    {
+    /* Shut down driver */
+    driver_block=session[a].driver_block;
+    portnumber=session[a].portnumber;
+    port=&session[a];
+    port_closedown();
+    }
+  }
+
+void timeupdate(int at,void *v)
+  {
+  int a,d; char tmp[10];
+
+  for(a=0;a<SESSIONS;a++)
+    {
+    if (session[a].status)
+      {
+      d=(clock()-session[a].start)/6000;
+      sprintf(tmp,"%d:%02d",d/60,d%60);
+      write_icon(status_handle,64+a,tmp);
+      }
+    }
+
+  /* Setup timer task */
+  alarm_set(alarm_timenow()+3000,timeupdate,0);
+  }
+
+void window_init()
+  {
+  wimp_wind *window; int a;
+
+  /* Start our task up */
+  wimpt_init("Telnet server");   /* Setup task */
+  res_init("TelnetIN");           /* Resource init */
+  resspr_init(); template_init(); dbox_init(); alarm_init();
+
+  /* Get on iconbar */
+  baricon("!telnetIN",(int)resspr_area(),nullproc);
+
+  /* Make a menu */
+  iconmenu=menu_new("TelnetIN",">Info,Quit");
+  event_attachmenu(win_ICONBAR,iconmenu,do_iconmenu,0);
+
+  window=template_syshandle("status");
+  wimpt_noerr(wimp_create_wind(window,&status_handle));
+
+  for(a= 0;a<32;a++) write_icon(status_handle,a,"");
+  for(a=32;a<64;a++) write_icon(status_handle,a,"None");
+  for(a=64;a<96;a++) write_icon(status_handle,a,"0:00");
+  for(a=96;a<128;a++) write_icon(status_handle,a,"");
+
+  win_register_event_handler(status_handle,poll_proc,0);
+  win_claim_idle_events(status_handle);
+  event_setmask((wimp_emask)0);
+  win_activeinc();
+
+  atexit(dealloc);
+
+  /* Setup timer task */
+  alarm_set(alarm_timenow()+3000,timeupdate,0);
+  }
+
+void do_iconmenu(void *handle,char *hit)
+  {
+  handle=handle;
+  port_select();
+
+  switch(hit[0])
+    {
+    case 1:
+    /* Info */
+      {
+      dbox d=dbox_new("info");
+
+      dbox_setfield(d,3,VERSIONDATE);
+      dbox_showstatic(d);
+      dbox_fillin(d);
+      dbox_dispose(&d);
+
+      break;
+      }
+    case 2:
+    /* Quit */
+      {
+      exit(0);
+      break;
+      }
+    }
+  }
+
+void poll_proc(wimp_eventstr *e,void *handle)
+  {
+  int ret,a;
+  handle=handle;
+
+  /* Poll listener */
+  if (socket_listener>=0)
+    {
+    struct sockaddr who; int wholen=16; char *c;
+
+    /* Find a session */
+    a=0; while(session[a].socket>=0 && a<SESSIONS) a++;
+
+    if (a<SESSIONS && session[a].portnumber>=0)
+      {
+      /* Try an accept */
+      if ((ret=accept(socket_listener,&who,&wholen))>=0)
+        {
+        struct sockaddr_in *whois=(struct sockaddr_in*)&who;
+
+        /* Save session details */
+        session[a].resolved=0;
+        strcpy(session[a].remote,inet_ntoa(whois->sin_addr));
+
+        session[a].rxlock=0;
+        session[a].txlock=0;
+        session[a].rxstate=0;
+        session[a].socket=ret;
+        session[a].to=who;
+        session[a].status=1;
+        session[a].start=clock();
+
+        /* Send telnet bits */
+        if ((session[a].flags&FLAG_NEGOTIATEOFF)==0)
+          {
+          negsend(session[a].socket,WILL,OPT_ECHO);
+          negsend(session[a].socket,DONT,OPT_ECHO);
+          negsend(session[a].socket,WILL,OPT_SUPRESS);
+          }
+
+        /* Send hello string */
+        port=&session[a];
+        portnumber=session[a].portnumber;
+        driver_block=session[a].driver_block;
+        port_dtr(1); port_rts(1);
+
+        c=session[a].init;
+        while(*c) { if (*c=='|') { port_txw(13); c++; } else port_txw(*c++); }
+        }
+      }
+    }
+
+  /* Poll sessions */
+  for(a=0;a<SESSIONS;a++)
+    {
+    /* Session active? */
+    if (session[a].status)
+      {
+      char buffer[1024],*b;
+      _session *this=&session[a];
+
+      /* Poll resolver */
+      if (session[a].resolved<3) resolve_address(this);
+
+      /* Set pointers to blockdriver */
+      port=this;
+      portnumber=this->portnumber;
+      driver_block=this->driver_block;
+
+      /* Hung up? */
+      if (this->rxlock==0 && this->txlock==0 && port_dcd()==0)
+        {
+        saybye(this,NULL);
+        break;
+        }
+
+      /* RX data locked? */
+      if (this->rxlock==0)
+        {
+        /* Try to read data */
+        this->rxlock=1;
+        ret=recv(this->socket,buffer,256,0);
+        if (ret==0)
+          {
+          /* Remote close */
+          saybye(this,NULL);
+          }
+        else
+          {
+          int x;
+
+          /* Any data? */
+          b=buffer;
+          while(ret-->0)
+            {
+            switch(this->rxstate)
+              {
+              case 0:
+                /* Normal state */
+                if (*b==IAC) { this->rxstate=10; break; }
+                if (*b==13 && (this->flags&FLAG_DONTEATLF)==0) this->rxstate=1;
+
+                /* Set pointers to blockdriver */
+                do
+                  {
+                  port=this;
+                  portnumber=this->portnumber;
+                  driver_block=this->driver_block;
+                  if ((x=port_tx(*b))!=0) window_poll();
+                  }
+                while(x!=0);
+                break;
+
+              case 1:
+                /* Swallow null following CR */
+                this->rxstate=0;
+                break;
+
+              case 10:
+                /* Got IAC/willwontdodont */
+                if (*b==IAC)
+                  {
+                  /* IAC IAC is IAC */
+                  do
+                    {
+                    port=this;
+                    portnumber=this->portnumber;
+                    driver_block=this->driver_block;
+                    if ((x=port_tx(IAC))!=0) window_poll();
+                    }
+                  while(x!=0);
+
+                  this->rxstate=0;
+                  break;
+                  }
+
+                this->rxstate=11;
+                break;
+
+              case 11:
+                /* Got parameter */
+                this->rxstate=0;
+                break;
+              }
+            b++;
+  	    }
+  	  }
+
+  	/* Unlock rx */
+        this->rxlock=0;
+	}
+
+      /* TX unlocked? */
+      if (this->txlock==0)
+        {
+        int done,todo,d;
+
+        /* Any data waiting in driver? */
+        b=buffer;
+        this->txlock=1;
+
+        while(port_rxbuffer()>0 &&(b-buffer)<1000)
+          {
+          /* Double IACs */
+          *b++=d=(this->flags&FLAG_7BIT)?(port_rx()&0x7f):port_rx();
+          if (d==IAC && (this->flags&FLAG_NEGOTIATEOFF)==0) *b++=d;
+          }
+        todo=b-buffer;
+
+        /* Send it */
+        done=0;
+        while(todo>0)
+          {
+          ret=send(this->socket,buffer+done,todo,0);
+          if (ret>0) { done+=ret; todo-=ret; }
+
+          /* Stop hanging */
+          if (todo>0) window_poll();
+          }
+
+        this->txlock=0;
+        }
+      }
+    }
+
+  switch(e->e)
+    {
+    case wimp_EOPEN:             /* Open_Window_Request */
+      {
+      wimp_open_wind(&e->data.o);
+      break;
+      }
+    case wimp_ECLOSE:            /* Close_Window_Request */
+      {
+      wimp_close_wind(e->data.o.w);
+      break;
+      }
+    case wimp_EBUT:              /* Click on disconnect icon */
+      {
+      if (e->data.but.m.bbits==4 && e->data.but.m.w==status_handle)
+        {
+        /* Select */
+        if (e->data.but.m.i>=128 && e->data.but.m.i<160)
+          {
+          int l=e->data.but.m.i-128;
+
+          if (session[l].status)
+            {
+            /* Disconnect session */
+            saybye(&session[l],"Connection cleared by operator");
+            }
+          }
+        }
+      break;
+      }
+    case 17:            /* Incoming message */
+    case 18:
+      {
+      switch(e->data.msg.hdr.action)
+        {
+        case 0:              /* Quit */
+          {
+          exit(0); break;
+          }
+        }
+      break;
+      }
+    }
+  }
+
+void nullproc(wimp_i a)
+  {
+  a=a;
+
+  open_swindow(status_handle,0,0);
+  }
+
+void write_icon(wimp_w window,wimp_i icon,char *string)
+  {
+  wimp_icon isblock;
+  wimp_icreate iblock;
+  int refresh=1;
+
+  /* Get icon info */
+  wimp_get_icon_info(window,icon,&isblock);
+
+  if (isblock.flags & 0x100)
+    {
+    strcpy(isblock.data.indirecttext.buffer,string);
+    }
+  else
+    {
+    strcpy(isblock.data.text,string);
+    wimp_delete_icon(window,icon);
+    iblock.w=window;
+    iblock.i=isblock;
+    wimp_create_icon(&iblock,&icon);
+    }
+  if (refresh) wimp_set_icon_state(window,icon,(wimp_iconflags)0,(wimp_iconflags)0);
+  }
+
+void read_icon(wimp_w window,wimp_i icon,char *string)
+  {
+  wimp_icon isblock;
+
+  /* Get icon info */
+  wimp_get_icon_info(window,icon,&isblock);
+
+  if (isblock.flags & 0x100)
+    {
+    strcpy(string,isblock.data.indirecttext.buffer);
+    }
+  else
+    {
+    strcpy(string,isblock.data.text);
+    }
+  }
+
+void set_icon(wimp_w handle,wimp_i icon,int onoff)
+  {
+  wimp_set_icon_state(handle,icon,(wimp_iconflags)(onoff?0:1<<21),(wimp_iconflags)(1<<21));
+  }
+
+void open_swindow(wimp_w wind,int x,int y)
+  {
+  wimp_wstate state;
+
+  wimp_get_wind_state(wind,&state);
+
+  /* Open window to full size, ontop of everything else */
+  state.o.x=x;
+  state.o.y=y;
+  state.o.behind=-1;
+
+  wimp_open_wind(&state.o);
+  }
+

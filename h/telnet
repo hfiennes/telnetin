@@ -1,0 +1,80 @@
+/*                  _____________________________________________
+                  [>                                             <]
+Project           [> ARCterm VII                                 <]
+Author            [> Hugo Fiennes                                <]
+Date started      [> 05-March-1990                               <]
+                  [>                                             <]
+Module name       [> Driver calls                                <]
+Current version   [> 00.05                                       <]
+Version date      [> 06-August-1997                              <]
+State             [> Unfinished                                  <]
+                  [>                                             <]
+                  [>  This source is COPYRIGHT © 1992-1997 by    <]
+                  [>      Hugo Fiennes of The Serial Port        <]
+                  [>_____________________________________________<]
+*/
+
+#define SESSIONS 32
+
+typedef struct
+  {
+  int (*driver)(int,...);
+  int portnumber,modemdriver,flags;
+  int status,start,rxstate;
+  int driver_block[1024];
+  char id[44],password[20],hello[256],init[80],remote[40];
+
+  /* Telnet bits */
+  int socket;
+  int rxlock,txlock;
+  struct sockaddr to;
+  int number;      /* line nr */
+  int resolved;    /* resolving state */
+
+  } _session;
+
+#define FLAG_DROP             0x00000001 /* Drop net.connection when 'dcd'
+                                            goes hi->lo */
+#define FLAG_LEAVEDTR         0x00000002 /* Leave DTR state as-is when
+                                            connection dropped */
+
+#define FLAG_7BIT             0x00000004 /* Knock outbound data down to 7 bit */
+                                            
+#define FLAG_DONTEATLF        0x00000008 /* Don't eat data after CR from user */
+
+#define FLAG_NEGOTIATEOFF     0x00000010 /* Don't send negotiation bollocks */
+
+#define Resolver_GetHost 0x66001
+
+#define EOF_          236
+#define SUSP          237
+#define ABORT         238
+#define EOR           239
+#define SE            240
+#define NOP           241
+#define DM            242
+#define BRK           243
+#define IP            244
+#define AO            245
+#define AYT           246
+#define EC            247
+#define EL            248
+#define GA            249
+#define SB            250
+#define WILL          251
+#define WONT          252
+#define DO            253
+#define DONT          254
+#define IAC           255
+
+#define OPT_BINARY          0
+#define OPT_ECHO            1
+#define OPT_SUPRESS         3
+#define OPT_STATUS          5
+#define OPT_TIMING          6
+#define OPT_TERMTYPE       24
+#define OPT_WINDOWSIZE     31
+#define OPT_TERMSPEED      32
+#define OPT_LFLOW          33
+#define OPT_LINEMODE       34
+#define OPT_ENVIRON        36

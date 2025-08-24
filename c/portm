@@ -1,0 +1,82 @@
+/*                  _____________________________________________
+                  [>                                             <]
+Project           [> Modem server                                <]
+Author            [> Hugo Fiennes                                <]
+Date started      [> 05-March-1990                               <]
+                  [>                                             <]
+Module name       [> Serial port drivers                         <]
+Current version   [> 00.02                                       <]
+Version date      [> 03-February-1994                            <]
+State             [> Unfinished                                  <]
+                  [>                                             <]
+                  [>  This source is COPYRIGHT © 1993-1994 by    <]
+                  [>      Hugo Fiennes of The Serial Port        <]
+                  [>_____________________________________________<]
+*/
+
+#include "port.h"
+#include "driver.h"
+#include "modem.h"
+
+extern int portnumber;
+extern void window_poll(void);
+extern _session *port;
+
+void port_initialise()
+  {
+  port->driver(DRIVER_INITIALISE,port->portnumber,0);
+  }
+
+void port_closedown()
+  {
+  port->driver(DRIVER_CLOSEDOWN,port->portnumber,0);
+  }
+
+/*** Set serial port data speeds ********************************** EXTERNAL */
+
+void port_speed(int inspeed,int outspeed)
+  {
+  port_txspeed(outspeed);
+  port_rxspeed(inspeed);
+  }
+
+void port_txspeed(int outspeed)
+  {
+  port->driver(DRIVER_TXSPEED,port->portnumber,outspeed);
+  }
+
+void port_rxspeed(int inspeed)
+  {
+  port->driver(DRIVER_RXSPEED,port->portnumber,inspeed);
+  }
+
+/*** Set port parity ********************************************** EXTERNAL */
+
+void port_parity(int par)
+  {
+  port->driver(DRIVER_WORDFORMAT,port->portnumber,par);
+  }
+
+/*** Set flow control ********************************************* EXTERNAL */
+
+void port_setflow(int fc)
+  {
+  switch(fc)
+    {
+    case 0: /* None */
+      {
+      port->driver(DRIVER_FLOWCONTROL,port->portnumber,0);
+      break;
+      }
+    case 1: /* Xon/xoff */
+      {
+      port->driver(DRIVER_FLOWCONTROL,port->portnumber,2);
+      break;
+      }
+    case 2: /* RTS/CTS */
+      {
+      port->driver(DRIVER_FLOWCONTROL,port->portnumber,1);
+      break;
+      }
+    }
+  }

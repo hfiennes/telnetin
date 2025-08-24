@@ -1,0 +1,15 @@
+; This entry is designed to connect to ARCbbs in 'pipe' modem
+; mode. It uses 'autodrop' - after the arcbbs login has finished,
+; the modem server will disconnect, and the init string satisfies
+; arcbbs's pipe modem type automatically. The hello string is sent
+; to the calling arcterm. No password is defined or needed in this
+; entry.
+;
+id          ARCbbs (line 0)
+driver      pipea
+port        0
+modemdriver 0
+autodrop
+init        HELLO| 
+hello       Connected to BBS|
+end

@@ -1,0 +1,4 @@
+WimpSlot -min 256k -max 256k
+Set TelnetIN$Dir <Obey$Dir>
+|
+Run <TelnetIN$Dir>.!RunImage %*0

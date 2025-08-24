@@ -1,0 +1,49 @@
+/*                  _____________________________________________
+                  [>                                             <]
+Project           [> ARCterm 7                                   <]
+Author            [> Hugo Fiennes                                <]
+Date started      [> 04-April-1989                               <]
+                  [>                                             <]
+Module name       [> Serial port driver header                   <]
+Current version   [> 00.19                                       <]
+Version date      [> 27-October-1992                             <]
+State             [> Unfinished                                  <]
+                  [>                                             <]
+                  [> This source is COPYRIGHT © 1989/90/91/92 by <]
+                  [>      Hugo Fiennes of The Serial Port        <]
+                  [>_____________________________________________<]
+*/
+
+void port_select(void),port_dtr(int),port_speed(int,int),
+     port_txclear(void),port_rxclear(void),port_rts(int),port_parity(int),
+     port_break(int),port_xonxoff(int),port_txw(int),port_waitout(void),
+     port_txspeed(int),port_rxspeed(int),port_getsize(void),
+     port_setflow(int),lport_tx(int),lport_break(int),lport_txw(int),
+     modem_setbaud(int),modem_dtrdial(int),modem_rtsdial(int),
+     modem_dtrpulse(int),port_insert(int),port_claim(int),
+     port_release(int);
+
+int  port_dcd(void),port_rxbuffer(void),port_txbuffer(void),port_rx(void),
+     port_allsent(void),lport_dcd(void),lport_rxbuffer(void),
+     lport_txbuffer(void),lport_rx(void),port_pollrx(int),
+     port_returnoutsize(void),port_remove(void),port_tx(int);
+
+#ifdef NEVER
+typedef struct
+  {
+  int  version;
+  char device[64],
+       author[60];
+
+  int  *claim(int),     fill0[63];
+  int  *release(int),   fill1[63];
+  int  *tx(int),        fill2[63];
+  int  *rx(void),       fill3[63];
+  int  *txbuffer(void), fill4[63];
+  int  *rxbuffer(void), fill5[63];
+  int  *txclear(void),  fill6[63];
+  int  *rxclear(void),  fill7[63];
+  int  *status(void),   fill8[63];
+  int  *setup(void),    fill9[63];
+  } device_driver;
+#endif
